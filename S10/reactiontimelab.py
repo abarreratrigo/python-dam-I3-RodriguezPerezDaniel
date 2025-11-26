@@ -1,315 +1,533 @@
 import pygame
 import time
 import random
-import sys
 import json
 import os
+from enum import Enum
 
-# ------------------------------
-# CONFIGURACIÓN INICIAL
-# ------------------------------
 pygame.init()
-WIDTH, HEIGHT = 1000, 600
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("ReactionTimeLab")
+ANCHO, ALTO = 1920, 1080
+pantalla = pygame.display.set_mode((ANCHO, ALTO))
+pygame.display.set_caption("LaboratorioTiempoReaccion")
+reloj = pygame.time.Clock()
 
-# Cargar fuente externa con fallback
-FONT_PATH = "./S10/ProFontIIxNerdFont-Regular.ttf"
-try:
-    font = pygame.font.Font(FONT_PATH, 32)
-except Exception:
-    font = pygame.font.SysFont("Arial", 32)
-    print("⚠ No se encontró la fuente, usando Arial por defecto")
+# -------------------------------
+# Rutas de imágenes
+# -------------------------------
+RUTA_S10 = "./S10"
+fondo_menu = pygame.image.load(os.path.join(RUTA_S10,"Foto2.jpg")).convert()
+fondo_menu = pygame.transform.scale(fondo_menu, (ANCHO, ALTO))
+fondo_usuario = pygame.image.load(os.path.join(RUTA_S10,"Foto1.jpg")).convert()
+fondo_usuario = pygame.transform.scale(fondo_usuario, (ANCHO, ALTO))
+imagen_circulo = pygame.image.load(os.path.join(RUTA_S10,"foto3.jpg")).convert_alpha()
+imagen_circulo = pygame.transform.scale(imagen_circulo, (140, 140))  # tamaño del círculo
 
-clock = pygame.time.Clock()
+# -------------------------------
+# Cargar fuentes
+# -------------------------------
+RUTA_FUENTE = os.path.join(RUTA_S10,"ProFontIIxNerdFont-Regular.ttf")
 
-# ------------------------------
-# Rutas y nombre de usuario
-# ------------------------------
-DB_PATH = "./S10/scores.json"
-
-def ask_username_console():
-    """Pide el nombre de usuario por la consola antes de iniciar el bucle."""
-    try:
-        username = input("Introduce tu nombre de usuario: ").strip()
-    except Exception:
-        username = ""
-    if not username:
-        username = "guest"
-    return username.lower()
-
-username = ask_username_console()
-
-# ------------------------------
-# FUNCIONES: JSON SCOREBOARD
-# ------------------------------
-
-def load_scores():
-    """Carga o crea el archivo JSON de puntuaciones."""
-    if not os.path.exists(DB_PATH):
-        try:
-            with open(DB_PATH, "w") as f:
-                json.dump({"players": {}}, f, indent=4)
-        except Exception as e:
-            print(f"Error creando {DB_PATH}: {e}")
-            return {"players": {}}
-    try:
-        with open(DB_PATH, "r") as f:
-            data = json.load(f)
-            if "players" not in data or not isinstance(data["players"], dict):
-                return {"players": {}}
-            return data
-    except (json.JSONDecodeError, IOError):
-        # Si hay algún problema, re-inicializamos el archivo
-        try:
-            with open(DB_PATH, "w") as f:
-                json.dump({"players": {}}, f, indent=4)
-        except Exception as e:
-            print(f"Error reseteando {DB_PATH}: {e}")
-        return {"players": {}}
-
-def save_scores(data):
-    """Guarda el diccionario de puntuaciones en JSON."""
-    try:
-        with open(DB_PATH, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error guardando puntuaciones: {e}")
-
-def register_or_get_user(name):
-    """Si el usuario no existe lo crea con puntuación alta (para poder mejorar)."""
-    db = load_scores()
-    if name not in db["players"]:
-        db["players"][name] = float("inf")  # puntuación grande (peor)
-        save_scores(db)
-    return db["players"][name]
-
-def update_score(name, new_score):
+def cargar_fuente(tamaño):
     """
-    Actualiza la puntuación si la nueva es mejor (menor tiempo).
-    Devuelve True si se actualizó, False si no.
+    Carga una fuente desde archivo, o Arial como fallback.
     """
-    db = load_scores()
-    old = db["players"].get(name, float("inf"))
     try:
-        # Si new_score es menor (mejor), actualizamos
-        if new_score < old:
-            db["players"][name] = new_score
-            save_scores(db)
-            return True
-    except Exception as e:
-        print(f"Error al actualizar score: {e}")
+        return pygame.font.Font(RUTA_FUENTE, tamaño)
+    except:
+        return pygame.font.SysFont("Arial", tamaño)
+
+FUENTES = {t: cargar_fuente(t) for t in [24,28,32,36,40,48,64,80,100]}
+
+# -------------------------------
+# Estados del juego
+# -------------------------------
+class EstadoJuego(Enum):
+    USUARIO = 1
+    MENU = 2
+    ESPERANDO = 3
+    CLIC = 4
+    RESULTADO = 5
+    PUNTUACIONES = 6
+    SELECCION_DIFICULTAD = 7
+    ENTRENAMIENTO_APUNTE = 8
+
+# -------------------------------
+# Dificultades
+# -------------------------------
+class Dificultad:
+    """
+    Representa una dificultad con nombre y rango de retraso para reacción.
+    """
+    def __init__(self,nombre,retraso_min,retraso_max):
+        self.nombre = nombre
+        self.retraso_min = retraso_min
+        self.retraso_max = retraso_max
+
+DIFICULTADES = {
+    "Fácil": Dificultad("Fácil", 3.0, 6.0),
+    "Normal": Dificultad("Normal", 2.0, 5.0),
+    "Difícil": Dificultad("Difícil", 1.0, 4.0),
+    "Extremo": Dificultad("Extremo", 0.5, 3.0)
+}
+dificultad_actual = DIFICULTADES["Normal"]
+
+# -------------------------------
+# Bases de datos
+# -------------------------------
+RUTA_DB_REACCION = os.path.join(RUTA_S10,"scores.json")
+RUTA_DB_APUNTE = os.path.join(RUTA_S10,"aim_scores.json")
+
+bd_reaccion = {"jugadores": {}}
+bd_apunte = {"jugadores": {}}
+
+def cargar_bd_reaccion():
+    """
+    Carga la base de datos de tiempos de reacción desde JSON.
+    """
+    global bd_reaccion
+    if not os.path.exists(RUTA_DB_REACCION):
+        guardar_bd_reaccion()
+    try:
+        with open(RUTA_DB_REACCION,"r") as f:
+            bd_reaccion = json.load(f)
+        if "jugadores" not in bd_reaccion:
+            bd_reaccion = {"jugadores": {}}
+    except:
+        bd_reaccion = {"jugadores": {}}
+        guardar_bd_reaccion()
+
+def guardar_bd_reaccion():
+    """Guarda la base de datos de tiempos de reacción en JSON."""
+    with open(RUTA_DB_REACCION,"w") as f:
+        json.dump(bd_reaccion,f,indent=4)
+
+def cargar_bd_apunte():
+    """
+    Carga la base de datos de puntuaciones de Aim Training.
+    """
+    global bd_apunte
+    if not os.path.exists(RUTA_DB_APUNTE):
+        guardar_bd_apunte()
+    try:
+        with open(RUTA_DB_APUNTE,"r") as f:
+            bd_apunte = json.load(f)
+        if "jugadores" not in bd_apunte:
+            bd_apunte = {"jugadores": {}}
+    except:
+        bd_apunte = {"jugadores": {}}
+        guardar_bd_apunte()
+
+def guardar_bd_apunte():
+    """Guarda la base de datos de puntuaciones de Aim Training."""
+    with open(RUTA_DB_APUNTE,"w") as f:
+        json.dump(bd_apunte,f,indent=4)
+
+def registrar_usuario(nombre):
+    """
+    Registra un usuario nuevo si no existe en ambas bases de datos.
+    """
+    if nombre not in bd_reaccion["jugadores"]:
+        bd_reaccion["jugadores"][nombre] = float("inf")
+    if nombre not in bd_apunte["jugadores"]:
+        bd_apunte["jugadores"][nombre] = 0
+    guardar_bd_reaccion()
+    guardar_bd_apunte()
+
+def actualizar_tiempo(nombre, tiempo):
+    """
+    Actualiza el mejor tiempo de reacción de un usuario.
+    """
+    if tiempo < bd_reaccion["jugadores"].get(nombre,float("inf")):
+        bd_reaccion["jugadores"][nombre] = tiempo
+        guardar_bd_reaccion()
+        return True
     return False
 
-def get_top5():
+def actualizar_puntuacion_apunte(nombre, puntos):
     """
-    Devuelve lista de 5 tuplas (usuario, score) ordenadas por mejor (menor tiempo).
-    Rellena con placeholders si hay menos de 5 jugadores.
+    Actualiza la puntuación de Aim Training de un usuario si es mejor.
     """
-    db = load_scores()
-    players = db.get("players", {})
-    # Convertimos inf a un valor alto para ordenar si hay usuarios sin score definido
-    normalized = [(u, players[u] if players[u] != float("inf") else 9999.0) for u in players]
-    sorted_players = sorted(normalized, key=lambda x: x[1])
-    # Rellenar placeholders si hacen falta
-    while len(sorted_players) < 5:
-        sorted_players.append((f"user{len(sorted_players)+1}", 0.0))
-    return sorted_players[:5]
+    if puntos > bd_apunte["jugadores"].get(nombre, 0):
+        bd_apunte["jugadores"][nombre] = puntos
+        guardar_bd_apunte()
 
-# Registrar (o crear) el usuario al inicio
-register_or_get_user(username)
+def obtener_todos_los_puntajes(modo="reaccion"):
+    """
+    Retorna todos los puntajes ordenados según modo.
+    """
+    if modo == "reaccion":
+        jugadores = bd_reaccion["jugadores"]
+        lista = [(jug, jugadores[jug] if jugadores[jug] != float("inf") else 9999) for jug in jugadores]
+        lista.sort(key=lambda x: x[1])
+    else:
+        jugadores = bd_apunte["jugadores"]
+        lista = [(jug, jugadores[jug]) for jug in jugadores]
+        lista.sort(key=lambda x: x[1], reverse=True)
+    return lista
 
-# ------------------------------
-# UTILIDADES GRAFICAS
-# ------------------------------
+cargar_bd_reaccion()
+cargar_bd_apunte()
 
-def dibujar_gradiente(surface, color_top, color_bottom):
-    """Dibuja un gradiente vertical suave en la superficie."""
-    h = surface.get_height()
-    for y in range(h):
-        ratio = y / max(1, h - 1)
-        r = color_top[0] * (1 - ratio) + color_bottom[0] * ratio
-        g = color_top[1] * (1 - ratio) + color_bottom[1] * ratio
-        b = color_top[2] * (1 - ratio) + color_bottom[2] * ratio
-        pygame.draw.line(surface, (int(r), int(g), int(b)), (0, y), (surface.get_width(), y))
+# -------------------------------
+# Variables globales
+# -------------------------------
+estado = EstadoJuego.USUARIO
+usuario = ""
+texto_entrada = ""
+mensaje = ""
 
-def renderizar_texto_centrado(text, y, color=(255,255,255), size=32):
-    """Renderiza texto centrado en X en la posición Y dada."""
-    try:
-        f = pygame.font.Font(FONT_PATH, size) if size != 32 else font
-    except Exception:
-        f = pygame.font.SysFont("Arial", size)
-    t = f.render(text, True, color)
-    rect = t.get_rect(center=(WIDTH // 2, y))
-    screen.blit(t, rect)
+tiempo_inicio = None
+tiempo_fin = None
+retraso_espera = None
+inicio_retraso = None
 
-def dibujar_boton(rect, texto, hover=False):
-    """Dibuja un botón rectangular con texto, resaltado si hover=True."""
-    color_bg = (255, 255, 255) if hover else (200, 200, 200)
-    color_text = (20, 20, 20) if hover else (10, 10, 10)
-    # fondo redondeado (simulación)
-    pygame.draw.rect(screen, color_bg, rect, border_radius=10)
-    # borde
-    pygame.draw.rect(screen, (0,0,0), rect, width=2, border_radius=10)
-    # texto centrado
-    try:
-        f = pygame.font.Font(FONT_PATH, 22)
-    except Exception:
-        f = pygame.font.SysFont("Arial", 22)
-    t = f.render(texto, True, color_text)
-    tr = t.get_rect(center=rect.center)
-    screen.blit(t, tr)
+btn_puntuaciones = pygame.Rect(ANCHO - 320, 50, 300, 70)
+btn_usuario = pygame.Rect(50, 50, 300, 70)
+btn_reaccion = pygame.Rect(ANCHO//2 - 150, ALTO//2 - 150, 300, 70)
+btn_apunte = pygame.Rect(ANCHO//2 - 150, ALTO//2, 300, 70)
+btn_dificultad = pygame.Rect(ANCHO//2 - 150, ALTO//2 + 150, 300, 70)
 
-# Coordenadas del botón Puntuaciones
-scores_button_rect = pygame.Rect(WIDTH - 220, 20, 200, 50)
+scroll_y = 0
+VELOCIDAD_SCROLL = 40
 
-# ------------------------------
-# VARIABLES DEL JUEGO
-# ------------------------------
-game_state = "start"   # start, waiting, click, result, scores
-start_time = None
-end_time = None
-waiting_delay = None
-delay_start = None
-last_update_message = ""  # mensaje breve tras actualizar score
+# -------------------------------
+# Funciones de interfaz
+# -------------------------------
+def dibujar_degradado(c1, c2):
+    """Dibuja un fondo degradado vertical."""
+    for y in range(ALTO):
+        r = int(c1[0]*(1 - y / (ALTO-1)) + c2[0] * (y / (ALTO-1)))
+        g = int(c1[1]*(1 - y / (ALTO-1)) + c2[1] * (y / (ALTO-1)))
+        b = int(c1[2]*(1 - y / (ALTO-1)) + c2[2] * (y / (ALTO-1)))
+        pygame.draw.line(pantalla, (r,g,b), (0,y), (ANCHO,y))
 
-# ------------------------------
-# BUCLE PRINCIPAL
-# ------------------------------
-running = True
-while running:
-    mouse_pos = pygame.mouse.get_pos()
-    mouse_pressed = pygame.mouse.get_pressed()[0]
+def texto_centrado(texto, y, tamaño=32, color=(255,255,255)):
+    """Dibuja texto centrado horizontalmente en la pantalla."""
+    fuente = FUENTES.get(tamaño, FUENTES[32])
+    renderizado = fuente.render(texto, True, color)
+    pantalla.blit(renderizado, renderizado.get_rect(center=(ANCHO//2, y)))
 
-    # ------------------------
-    # GESTIONAR EVENTOS
-    # ------------------------
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            # Salvar y salir
+def dibujar_boton(rect, texto):
+    """Dibuja un botón con texto, cambia de color al pasar el mouse."""
+    hover = rect.collidepoint(pygame.mouse.get_pos())
+    color_fondo = (255,255,255) if hover else (200,200,200)
+    pygame.draw.rect(pantalla, color_fondo, rect, border_radius=15)
+    pygame.draw.rect(pantalla, (0,0,0), rect, 3, border_radius=15)
+    t = FUENTES[36].render(texto, True, (0,0,0))
+    pantalla.blit(t, t.get_rect(center=rect.center))
+    return hover
+
+# -------------------------------
+# Manejo de eventos
+# -------------------------------
+def actualizar_usuario(evento):
+    """Maneja la entrada de nombre de usuario."""
+    global usuario, texto_entrada, estado
+    if evento.type == pygame.KEYDOWN:
+        if evento.key == pygame.K_RETURN:
+            usuario = texto_entrada.strip().lower() or "guest"
+            registrar_usuario(usuario)
+            estado = EstadoJuego.MENU
+        elif evento.key == pygame.K_BACKSPACE:
+            texto_entrada = texto_entrada[:-1]
+        elif evento.key == pygame.K_ESCAPE:
             pygame.quit()
-            sys.exit()
+            exit()
+        else:
+            if len(texto_entrada)<16:
+                texto_entrada += evento.unicode
 
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            # Clic según estado
-            if game_state == "start":
-                # Si el usuario clic en el botón puntuaciones -> ir a pantalla scores
-                if scores_button_rect.collidepoint(mouse_pos):
-                    game_state = "scores"
-                else:
-                    # Comenzamos la secuencia normal
-                    waiting_delay = random.uniform(3, 7)
-                    delay_start = time.time()
-                    game_state = "waiting"
+def iniciar_espera():
+    """Inicia la espera aleatoria antes de reaccionar."""
+    global retraso_espera, inicio_retraso, estado
+    retraso_espera = random.uniform(dificultad_actual.retraso_min, dificultad_actual.retraso_max)
+    inicio_retraso = time.time()
+    estado = EstadoJuego.ESPERANDO
 
-            elif game_state == "click":
-                # Usuario respondió, registramos tiempo y mostramos resultado
-                end_time = time.time()
-                reaction = round(end_time - start_time, 3)
-                # Actualizamos scoreboard (si mejora)
-                try:
-                    mejoro = update_score(username, reaction)
-                    if mejoro:
-                        last_update_message = f"🎉 Nueva mejor puntuación: {reaction} s"
-                    else:
-                        last_update_message = f"Tu tiempo: {reaction} s (no superaste tu mejor marca)"
-                except Exception as e:
-                    last_update_message = f"Error al actualizar scoreboard: {e}"
-                game_state = "result"
+def actualizar_menu(evento):
+    """Maneja eventos en el menú principal."""
+    global estado, mensaje, texto_entrada
+    if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+        x,y = evento.pos
+        if btn_puntuaciones.collidepoint(x,y):
+            estado = EstadoJuego.PUNTUACIONES
+            return
+        if btn_usuario.collidepoint(x,y):
+            texto_entrada = ""
+            estado = EstadoJuego.USUARIO
+            return
+        if btn_reaccion.collidepoint(x,y):
+            iniciar_espera()
+            return
+        if btn_apunte.collidepoint(x,y):
+            iniciar_entrenamiento_apunte()
+            estado = EstadoJuego.ENTRENAMIENTO_APUNTE
+            return
+        if btn_dificultad.collidepoint(x,y):
+            estado = EstadoJuego.SELECCION_DIFICULTAD
+            return
+    if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+        pygame.quit()
+        exit()
 
-            elif game_state == "result":
-                # Volver al inicio
-                game_state = "start"
+def actualizar_esperando(evento):
+    """Maneja eventos mientras se espera el inicio de la reacción."""
+    global estado, mensaje
+    if evento.type == pygame.MOUSEBUTTONDOWN:
+        mensaje = "Muy pronto. Inténtalo de nuevo."
+        estado = EstadoJuego.MENU
+    if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+        pygame.quit()
+        exit()
 
-            elif game_state == "scores":
-                # En scores, clic vuelve al inicio
-                game_state = "start"
+def actualizar_click(evento):
+    """Maneja eventos cuando se espera el clic de reacción."""
+    global tiempo_fin, estado, mensaje
+    if evento.type == pygame.MOUSEBUTTONDOWN:
+        tiempo_fin = time.time()
+        reaccion = round(tiempo_fin - tiempo_inicio, 3)
+        if actualizar_tiempo(usuario, reaccion):
+            mensaje = f"Nueva marca: {reaccion}s"
+        else:
+            mensaje = f"Tiempo: {reaccion}s"
+        estado = EstadoJuego.RESULTADO
+    if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+        pygame.quit()
+        exit()
 
-    # ------------------------
-    # LÓGICA DE ESTADOS
-    # ------------------------
-    if game_state == "waiting":
-        # Si ha pasado el delay, cambiamos a click y guardamos start_time
-        if delay_start is None:
-            delay_start = time.time()
-        if time.time() - delay_start >= waiting_delay:
-            game_state = "click"
-            start_time = time.time()
+def actualizar_resultado(evento):
+    """Maneja eventos en la pantalla de resultados."""
+    global estado
+    if evento.type == pygame.MOUSEBUTTONDOWN or (evento.type == pygame.KEYDOWN and evento.key == pygame.K_SPACE):
+        estado = EstadoJuego.MENU
+    if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+        pygame.quit()
+        exit()
 
-    # ------------------------
-    # DIBUJAR SEGÚN ESTADO
-    # ------------------------
-    # Estado: start
-    if game_state == "start":
-        dibujar_gradiente(screen, (0, 80, 200), (0, 0, 50))
-        renderizar_texto_centrado("Demuestra tus reflejos", 120)
-        renderizar_texto_centrado("Haz click (fuera del botón) para comenzar", 300, size=24)
-        # Dibujamos círculo decorativo
-        pygame.draw.circle(screen, (255, 255, 255), (500, 420), 70, 6)
+def actualizar_puntajes(evento):
+    """Maneja eventos en la pantalla de puntuaciones."""
+    global estado, scroll_y
+    if evento.type == pygame.MOUSEBUTTONDOWN:
+        estado = EstadoJuego.MENU
+    if evento.type == pygame.MOUSEWHEEL:
+        scroll_y += -evento.y * VELOCIDAD_SCROLL
+        scroll_y = max(min(scroll_y,0), -2000)
+    if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+        pygame.quit()
+        exit()
 
-        # Dibujamos botón Puntuaciones (hover si el ratón está encima)
-        hover = scores_button_rect.collidepoint(mouse_pos)
-        dibujar_boton(scores_button_rect, "Puntuaciones", hover=hover)
+# -------------------------------
+# Dibujo pantallas
+# -------------------------------
+def dibujar_usuario():
+    """Dibuja la pantalla de entrada de usuario."""
+    pantalla.blit(fondo_usuario, (0, 0))
+    texto_centrado("Introduce nombre de usuario:",300,48)
+    pygame.draw.rect(pantalla,(255,255,255),(ANCHO//2 -200, ALTO//2 -25, 400,50), border_radius=15)
+    txt = FUENTES[48].render(texto_entrada, True, (0,0,0))
+    pantalla.blit(txt, (ANCHO//2 - 180, ALTO//2 - 20))
 
-        # Mostramos último mensaje de actualización
-        if last_update_message:
-            renderizar_texto_centrado(last_update_message, 540, size=22)
+def dibujar_menu():
+    """Dibuja el menú principal."""
+    pantalla.blit(fondo_menu, (0, 0))
+    texto_centrado("Demuestra tus reflejos",150,80)
+    dibujar_boton(btn_reaccion,"Modo Reacción")
+    dibujar_boton(btn_apunte,"Aim-Training")
+    dibujar_boton(btn_dificultad,"Cambiar Dificultad")
+    dibujar_boton(btn_puntuaciones,"Puntuaciones")
+    txt = FUENTES[36].render(f"Usuario: {usuario}", True, (255,255,255))
+    pantalla.blit(txt,(300,70))
 
-        # Mostramos nombre de usuario actual arriba a la izquierda
-        try:
-            fsmall = pygame.font.Font(FONT_PATH, 18)
-        except:
-            fsmall = pygame.font.SysFont("Arial", 18)
-        user_text = f"User: {username}"
-        tuser = fsmall.render(user_text, True, (255,255,255))
-        screen.blit(tuser, (20, 25))
+def dibujar_espera():
+    """Dibuja pantalla de espera antes de reaccionar."""
+    dibujar_degradado((20,20,20),(60,60,60))
+    texto_centrado("¿PREPARADO?",500,64)
+    puntos = int((time.time() - inicio_retraso)*2)%4
+    texto_centrado("."*puntos,600,80)
 
-    # Estado: waiting
-    elif game_state == "waiting":
-        dibujar_gradiente(screen, (20, 20, 20), (60, 60, 60))
-        renderizar_texto_centrado("¿PREPARADO?", 300)
-        # Indicador de espera (texto dinámico)
+def dibujar_click():
+    """Dibuja la pantalla de clic de reacción."""
+    dibujar_degradado((150,0,0),(80,0,0))
+    texto_centrado("¡YA!",500,100)
+    texto_centrado("Pulsa rápido",650,48)
 
+def dibujar_resultado():
+    """Dibuja pantalla de resultados de reacción."""
+    dibujar_degradado((0,160,100),(0,60,20))
+    reaccion = round(tiempo_fin - tiempo_inicio,3)
+    texto_centrado("Tiempo de reacción:",400,64)
+    texto_centrado(f"{reaccion} segundos",550,80)
+    texto_centrado(mensaje,650,48)
+    texto_centrado("Click o espacio para reiniciar",750,48)
 
-    # Estado: click
-    elif game_state == "click":
-        dibujar_gradiente(screen, (150, 0, 0), (80, 0, 0))
-        renderizar_texto_centrado("¡YA!", 300, size=64)
-        renderizar_texto_centrado("Pulsa rápido", 380, size=22)
+def dibujar_puntajes():
+    """Dibuja la pantalla de puntuaciones."""
+    global scroll_y
+    dibujar_degradado((10,10,40),(0,0,0))
+    y = 100 + scroll_y
+    texto_centrado("SCOREBOARD - REACCIÓN",y,64)
+    y+=80
+    for u,s in obtener_todos_los_puntajes("reaccion"):
+        texto_centrado(f"{u} - {round(s,3)} s",y,48)
+        y+=60
+    y+=80
+    texto_centrado("SCOREBOARD - AIM TRAINING",y,64)
+    y+=80
+    for u,s in obtener_todos_los_puntajes("apunte"):
+        texto_centrado(f"{u} - {round(s,2)} pts",y,48)
+        y+=60
+    texto_centrado("Click o scroll para volver", ALTO-60,48)
 
-    # Estado: result
-    elif game_state == "result":
-        # reaction = round(end_time - start_time, 3)  <-- ya calculado antes
-        try:
-            reaction = round(end_time - start_time, 3)
-        except Exception:
-            reaction = 0.0
-        dibujar_gradiente(screen, (0, 160, 100), (0, 60, 20))
-        renderizar_texto_centrado("Tiempo de reacción:", 220)
-        renderizar_texto_centrado(f"{reaction} segundos", 320, size=40)
-        renderizar_texto_centrado("Clic para volver a empezar", 500, size=22)
-        # Mostrar info de si mejoró o no
-        renderizar_texto_centrado(last_update_message, 420, size=22)
+# -------------------------------
+# Selector dificultad
+# -------------------------------
+botones_dificultad = []
+etiquetas_dificultad = list(DIFICULTADES.keys())
+def inicializar_ui_dificultad():
+    """Inicializa botones para seleccionar dificultad."""
+    global botones_dificultad
+    botones_dificultad=[]
+    y=300
+    for etiqueta in etiquetas_dificultad:
+        rect = pygame.Rect(ANCHO//2-150,y,300,70)
+        botones_dificultad.append((etiqueta, rect))
+        y+=120
+inicializar_ui_dificultad()
 
-    # Estado: scores (pantalla Top 5)
-    elif game_state == "scores":
-        dibujar_gradiente(screen, (10, 10, 40), (0, 0, 0))
-        renderizar_texto_centrado("TOP 5 JUGADORES", 80, size=36)
+def dibujar_dificultad():
+    """Dibuja pantalla de selección de dificultad."""
+    dibujar_degradado((30,30,30),(0,0,0))
+    texto_centrado("Selecciona dificultad",200,80)
+    for etiqueta, rect in botones_dificultad:
+        dibujar_boton(rect,etiqueta)
 
-        top = get_top5()
-        y = 160
-        try:
-            # Mostrar cada entrada del top
-            for user, score in top:
-                # Si score == 0 (placeholder), mostramos "0 s" tal como pediste
-                score_display = f"{round(score,3)} s" if score != 0.0 else "0 s"
-                renderizar_texto_centrado(f"{user} - {score_display}", y, size=28)
-                y += 60
-        except Exception as e:
-            renderizar_texto_centrado(f"Error mostrando top: {e}", 300)
+def manejar_dificultad(evento):
+    """Maneja eventos en pantalla de selección de dificultad."""
+    global estado, dificultad_actual
+    if evento.type == pygame.MOUSEBUTTONDOWN and evento.button==1:
+        mx,my = evento.pos
+        for etiqueta, rect in botones_dificultad:
+            if rect.collidepoint(mx,my):
+                dificultad_actual = DIFICULTADES[etiqueta]
+                estado = EstadoJuego.MENU
+    if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+        pygame.quit()
+        exit()
 
-        renderizar_texto_centrado("Clic para volver", 540, size=22)
+# -------------------------------
+# Entrenamiento de puntería
+# -------------------------------
+circulo_apunte = None
+puntuacion_apunte = 0
+inicio_circulo = None
+activo_apunte = False
+circulos_clicados = 0
+TOTAL_CIRCULOS = 30
 
-    # Actualizar pantalla
+def iniciar_entrenamiento_apunte():
+    """Inicia el entrenamiento de Aim Training."""
+    global circulo_apunte, puntuacion_apunte, inicio_circulo, activo_apunte, circulos_clicados
+    puntuacion_apunte = 0
+    circulos_clicados = 0
+    circulo_apunte = generar_circulo()
+    inicio_circulo = time.time()
+    activo_apunte = True
+
+def generar_circulo():
+    """Genera un círculo aleatorio dentro de la pantalla."""
+    radio = 70
+    x = random.randint(radio, ANCHO-radio)
+    y = random.randint(200+radio, ALTO-100-radio)
+    return pygame.Rect(x-radio, y-radio, radio*2, radio*2)
+
+def actualizar_apunte(evento):
+    """
+    Maneja el entrenamiento de puntería:
+    - Clic sobre círculo suma puntos
+    - Clic fuera resta puntos
+    """
+    global circulo_apunte, puntuacion_apunte, inicio_circulo, activo_apunte, circulos_clicados, estado
+    if not activo_apunte: return
+    if evento.type == pygame.MOUSEBUTTONDOWN:
+        mx,my = evento.pos
+        if circulo_apunte.collidepoint(mx,my):
+            tiempo_reaccion = time.time()-inicio_circulo
+            puntos = max(0, round(10-tiempo_reaccion,2))
+            puntuacion_apunte += puntos
+            circulos_clicados += 1
+            if circulos_clicados>=TOTAL_CIRCULOS:
+                activo_apunte = False
+                actualizar_puntuacion_apunte(usuario,int(puntuacion_apunte))
+                estado = EstadoJuego.MENU
+            else:
+                circulo_apunte = generar_circulo()
+                inicio_circulo = time.time()
+        else:
+            puntuacion_apunte -= 5
+            if puntuacion_apunte<0:
+                puntuacion_apunte = 0
+    if evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+        pygame.quit()
+        exit()
+
+def dibujar_apunte():
+    """Dibuja pantalla de entrenamiento de puntería."""
+    dibujar_degradado((0,0,0),(40,40,40))
+    texto_centrado(f"Círculos restantes: {TOTAL_CIRCULOS-circulos_clicados}",100,64)
+    texto_centrado(f"Puntuación: {round(puntuacion_apunte,2)}",200,48)
+    if circulo_apunte:
+        pantalla.blit(imagen_circulo, circulo_apunte.topleft)
+    texto_centrado("Haz click en el círculo lo más rápido posible",300,48)
+
+# -------------------------------
+# Bucle principal
+# -------------------------------
+ejecutando = True
+while ejecutando:
+    for evento in pygame.event.get():
+        if evento.type == pygame.QUIT:
+            ejecutando = False
+            break
+        if estado == EstadoJuego.USUARIO:
+            actualizar_usuario(evento)
+        elif estado == EstadoJuego.MENU:
+            actualizar_menu(evento)
+        elif estado == EstadoJuego.ESPERANDO:
+            actualizar_esperando(evento)
+        elif estado == EstadoJuego.CLIC:
+            actualizar_click(evento)
+        elif estado == EstadoJuego.RESULTADO:
+            actualizar_resultado(evento)
+        elif estado == EstadoJuego.PUNTUACIONES:
+            actualizar_puntajes(evento)
+        elif estado == EstadoJuego.SELECCION_DIFICULTAD:
+            manejar_dificultad(evento)
+        elif estado == EstadoJuego.ENTRENAMIENTO_APUNTE:
+            actualizar_apunte(evento)
+
+    # Verifica si terminó el tiempo de espera para iniciar clic
+    if estado == EstadoJuego.ESPERANDO:
+        if inicio_retraso and time.time()-inicio_retraso >= retraso_espera:
+            tiempo_inicio = time.time()
+            estado = EstadoJuego.CLIC
+
+    # Dibujar según estado
+    if estado == EstadoJuego.USUARIO:
+        dibujar_usuario()
+    elif estado == EstadoJuego.MENU:
+        dibujar_menu()
+    elif estado == EstadoJuego.ESPERANDO:
+        dibujar_espera()
+    elif estado == EstadoJuego.CLIC:
+        dibujar_click()
+    elif estado == EstadoJuego.RESULTADO:
+        dibujar_resultado()
+    elif estado == EstadoJuego.PUNTUACIONES:
+        dibujar_puntajes()
+    elif estado == EstadoJuego.SELECCION_DIFICULTAD:
+        dibujar_dificultad()
+    elif estado == EstadoJuego.ENTRENAMIENTO_APUNTE:
+        dibujar_apunte()
+
     pygame.display.update()
-    clock.tick(60)
+    reloj.tick(60)

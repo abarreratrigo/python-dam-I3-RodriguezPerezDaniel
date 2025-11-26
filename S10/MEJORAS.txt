@@ -1,0 +1,14 @@
+MEJORAS:
+- Funcionalidades
+  - Aim Trainer x
+  - Selector de dificultad x
+  - Agregar un temporizador visual en estado espera
+  - Añadir sonido opcional
+  - Permitir cambiar usuario sin reiniciar programa
+- Técnicas
+  - Mejoras en la base de datos x
+  - Traducciones al castellano x
+  - Bloqueo del input
+- Claridad y organización del código
+ - Comentarios (Docstrings más claros) x
+ - Funciones más claras x
